@@ -13,7 +13,8 @@ import sim
 
 BEGIN = 1800
 END = 4200
-PERIOD = 5
+PERIOD = 10
+RECORDED = 5
 SPAN = 3300.0
 LABELS = {"x_base": "Baseline", "x_open_block": "Central block opened", "x_axis_closed": "East-west axis closed in the centre",
           "x_ring2_closed": "North side of ring 2 closed", "x_rings_free": "Rings without signals",
@@ -27,7 +28,7 @@ def simulate(tag, step):
                "--begin", "0", "--end", str(END + PERIOD), "--seed", "1", "--step-length", step,
                "--device.rerouting.probability", "1", "--device.rerouting.period", "120",
                "--ignore-route-errors", "true", "--no-warnings", "true", "--no-step-log", "true",
-               "--fcd-output", fcd, "--device.fcd.period", str(PERIOD), "--device.fcd.begin", str(BEGIN),
+               "--fcd-output", fcd, "--device.fcd.period", str(RECORDED), "--device.fcd.begin", str(BEGIN),
                "--fcd-output.attributes", "x,y,speed"]
     done = subprocess.run(command, capture_output=True, text=True)
     if done.returncode != 0:
@@ -99,13 +100,25 @@ def convert(tag, fcd, label, step):
 def main():
     tag = sys.argv[1] if len(sys.argv) > 1 else "x_base"
     step = sys.argv[2] if len(sys.argv) > 2 else "1.0"
+    if tag == "all":
+        for known in json.load(open(os.path.join("web", "scenarios.json"))):
+            record(known["tag"], "0.5" if known["tag"].startswith("y_") else "1.0")
+        return
+    record(tag, step)
+
+
+def record(tag, step):
     if not os.path.exists(os.path.join("runs", tag, "trips.xml")):
         print("no scenario called %s in the runs folder" % tag)
         return
     label = LABELS.get(tag, tag)
     print("recording %s (%s), this takes a few minutes..." % (tag, label))
-    fcd = simulate(tag, step)
-    print("positions written to %s, %.0f MB" % (fcd, os.path.getsize(fcd) / 1e6))
+    fcd = os.path.join("runs", tag, "fcd.xml")
+    if os.path.exists(fcd):
+        print("using the positions already recorded in %s" % fcd)
+    else:
+        fcd = simulate(tag, step)
+        print("positions written to %s, %.0f MB" % (fcd, os.path.getsize(fcd) / 1e6))
     frames, count = convert(tag, fcd, label, step)
     sizes = [len(rows) for t, rows in frames]
     print("frames: %d, one every %d s, from minute %d to minute %d" % (len(frames), PERIOD, BEGIN // 60, END // 60))

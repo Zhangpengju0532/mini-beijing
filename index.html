@@ -82,7 +82,20 @@ async function load(tag) {
   data = null;
   try {
     const meta = await (await fetch("web/" + tag + ".json")).json();
-    const view = new DataView(await (await fetch("web/" + tag + ".bin")).arrayBuffer());
+    const reply = await fetch("web/" + tag + ".bin");
+    if (!reply.ok) throw new Error("missing");
+    const size = parseInt(reply.headers.get("Content-Length") || "0", 10), reader = reply.body.getReader(), parts = [];
+    let got = 0;
+    for (;;) {
+      const piece = await reader.read();
+      if (piece.done) break;
+      parts.push(piece.value); got += piece.value.length;
+      el("message").textContent = size ? "Loading " + Math.round(100 * got / size) + "%" : "Loading " + (got / 1e6).toFixed(1) + " MB";
+    }
+    const bytes = new Uint8Array(got);
+    let filled = 0;
+    for (const part of parts) { bytes.set(part, filled); filled += part.length; }
+    const view = new DataView(bytes.buffer);
     const frames = [];
     let at = 4;
     for (let f = 0, n = view.getUint32(0, true); f < n; f++) {
@@ -124,7 +137,7 @@ function drawMap() {
     mc.beginPath(); mc.moveTo(px(r[0]), py(r[1])); mc.lineTo(px(r[2]), py(r[3])); mc.stroke();
   }
   const frames = data.frames, i = Math.min(Math.floor(cursor), frames.length - 1), a = frames[i], b = frames[Math.min(i + 1, frames.length - 1)], f = cursor - i;
-  const dot = Math.max(1.6, size / 420), reach = 175 / (2 * span) * 65535;
+  const dot = Math.max(1.6, size / 420), reach = 35 * data.meta.period / (2 * span) * 65535;
   mc.globalCompositeOperation = "lighter";
   let j = 0;
   for (let k = 0; k < a.count; k++) {
