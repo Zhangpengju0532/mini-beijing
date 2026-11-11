@@ -1,0 +1,18 @@
+[
+ {
+  "tag": "x_base",
+  "label": "Baseline"
+ },
+ {
+  "tag": "x_demand_80",
+  "label": "Demand reduced by 20%"
+ },
+ {
+  "tag": "x_rings_free",
+  "label": "Rings without signals"
+ },
+ {
+  "tag": "y_av_100",
+  "label": "100% automated vehicles"
+ }
+]
