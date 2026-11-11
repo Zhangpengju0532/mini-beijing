@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini-Beijing morning peak</title>
+<style>
+:root { --night: #070a14; --panel: #0e1326; --line: #262d4d; --text: #d9deef; --muted: #8791b5; --accent: #2a78d6; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--night); color: var(--text); font-family: "Segoe UI", system-ui, Arial, sans-serif; }
+.layout { display: flex; height: 100%; }
+.panel { width: 300px; flex: none; padding: 20px 18px; background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; }
+.stage { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#map { flex: 1; min-height: 0; display: block; width: 100%; }
+#strip { height: 92px; display: block; width: 100%; border-top: 1px solid var(--line); cursor: pointer; touch-action: none; }
+h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px 0; }
+.sub { font-size: 12.5px; color: var(--muted); margin: 0 0 16px 0; line-height: 1.5; }
+label { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 9px 0; font-size: 13.5px; }
+select { width: 170px; padding: 6px 8px; font-size: 13.5px; background: #151a36; color: #fff; border: 1px solid var(--line); border-radius: 4px; }
+.row { display: flex; gap: 8px; margin-top: 12px; }
+button { flex: 1; padding: 9px 6px; font-size: 14px; background: var(--accent); color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+.clock { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 16px 0 2px 0; }
+.stats { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); line-height: 1.9; font-variant-numeric: tabular-nums; }
+.stats b { color: var(--text); font-weight: 500; float: right; }
+.key { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.ramp { height: 10px; border-radius: 3px; margin: 6px 0 4px 0; background: linear-gradient(90deg, #ff3b3b, #ff9d2e, #ffe27a, #7fe0ff); }
+.ends { display: flex; justify-content: space-between; }
+.note { margin-top: 14px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.message { color: #ffcc33; font-size: 12.5px; min-height: 18px; margin-top: 8px; }
+@media (max-width: 760px) {
+  .layout { flex-direction: column; }
+  .panel { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); max-height: 44%; }
+  .clock { font-size: 26px; margin-top: 10px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="panel">
+    <h1>Mini-Beijing morning peak</h1>
+    <p class="sub">Every dot is one simulated car in a small city laid out like Beijing: three ring roads, a grid, a closed central block and eight gates. The colour is the speed.</p>
+    <label>Scenario<select id="scenario"></select></label>
+    <label>Playback<select id="rate"><option value="30">30x</option><option value="60" selected>60x</option><option value="120">120x</option><option value="240">240x</option></select></label>
+    <div class="row"><button id="toggle">Pause</button></div>
+    <div class="message" id="message">Loading...</div>
+    <div class="clock" id="clock">--:--</div>
+    <div class="stats">
+      <div>Cars on the road <b id="s_count">-</b></div>
+      <div>Mean speed <b id="s_speed">-</b></div>
+      <div>Standing still <b id="s_still">-</b></div>
+    </div>
+    <div class="key">
+      Speed of each car
+      <div class="ramp"></div>
+      <div class="ends"><span>0 km/h</span><span>30</span><span>60 and above</span></div>
+    </div>
+    <div class="note">The strip under the map shows the mean speed over the recorded 40 minutes. Click or drag on it to jump in time. The traffic is computed with the SUMO simulator; this page only replays the recorded positions.</div>
+  </div>
+  <div class="stage">
+    <canvas id="map"></canvas>
+    <canvas id="strip"></canvas>
+  </div>
+</div>
+<script>
+"use strict";
+const el = id => document.getElementById(id);
+const map = el("map"), strip = el("strip"), mc = map.getContext("2d"), sc = strip.getContext("2d");
+const ROAD = { arterial: ["#232a45", 1], axis: ["#3a4572", 2.2], ring2: ["#33406e", 1.8], ring3: ["#33406e", 1.8], ring4: ["#33406e", 1.8], radial: ["#33406e", 1.8] };
+const STOPS = [[0, [255, 59, 59]], [20, [255, 157, 46]], [40, [255, 226, 122]], [60, [127, 224, 255]]];
+const DAY_START = 7 * 3600;
+let data = null, cursor = 0, playing = true, last = null, palette = [];
+
+for (let s = 0; s <= 600; s++) {
+  const kmh = Math.min(s * 0.36, 60);
+  let k = 0; while (k < STOPS.length - 2 && kmh > STOPS[k + 1][0]) k++;
+  const f = (kmh - STOPS[k][0]) / (STOPS[k + 1][0] - STOPS[k][0]);
+  palette.push("rgb(" + [0, 1, 2].map(i => Math.round(STOPS[k][1][i] + (STOPS[k + 1][1][i] - STOPS[k][1][i]) * f)).join(",") + ")");
+}
+
+async function load(tag) {
+  el("message").textContent = "Loading...";
+  data = null;
+  try {
+    const meta = await (await fetch("web/" + tag + ".json")).json();
+    const view = new DataView(await (await fetch("web/" + tag + ".bin")).arrayBuffer());
+    const frames = [];
+    let at = 4;
+    for (let f = 0, n = view.getUint32(0, true); f < n; f++) {
+      const t = view.getUint32(at, true), count = view.getUint32(at + 4, true);
+      const rows = new Uint16Array(count * 4);
+      for (let i = 0; i < count * 4; i++) rows[i] = view.getUint16(at + 8 + 2 * i, true);
+      at += 8 + 8 * count;
+      let sum = 0, still = 0;
+      for (let i = 0; i < count; i++) { const v = rows[4 * i + 3]; sum += v; if (v < 14) still++; }
+      frames.push({ t, count, rows, speed: count ? sum / count * 0.36 : 0, still: count ? 100 * still / count : 0 });
+    }
+    data = { meta, frames };
+    cursor = 0;
+    el("message").textContent = "";
+  } catch (problem) {
+    el("message").textContent = "Could not load this scenario.";
+  }
+}
+
+function fit(canvas) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  canvas.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [w, h];
+}
+
+function drawMap() {
+  const [w, h] = fit(map);
+  mc.globalCompositeOperation = "source-over";
+  mc.fillStyle = "#070a14"; mc.fillRect(0, 0, w, h);
+  if (!data) return;
+  const span = data.meta.span, size = Math.min(w, h) * 0.96, ox = (w - size) / 2, oy = (h - size) / 2;
+  const px = x => ox + (x + span) / (2 * span) * size, py = y => oy + (1 - (y + span) / (2 * span)) * size;
+  mc.lineCap = "round";
+  for (const pass of ["arterial", "other"]) for (const r of data.meta.roads) {
+    if ((r[4] === "arterial") !== (pass === "arterial")) continue;
+    const style = ROAD[r[4]] || ROAD.arterial;
+    mc.strokeStyle = style[0]; mc.lineWidth = style[1] * Math.max(1, size / 700);
+    mc.beginPath(); mc.moveTo(px(r[0]), py(r[1])); mc.lineTo(px(r[2]), py(r[3])); mc.stroke();
+  }
+  const frames = data.frames, i = Math.min(Math.floor(cursor), frames.length - 1), a = frames[i], b = frames[Math.min(i + 1, frames.length - 1)], f = cursor - i;
+  const dot = Math.max(1.6, size / 420), reach = 175 / (2 * span) * 65535;
+  mc.globalCompositeOperation = "lighter";
+  let j = 0;
+  for (let k = 0; k < a.count; k++) {
+    const id = a.rows[4 * k];
+    let x = a.rows[4 * k + 1], y = a.rows[4 * k + 2];
+    while (j < b.count && b.rows[4 * j] < id) j++;
+    if (j < b.count && b.rows[4 * j] === id) {
+      const bx = b.rows[4 * j + 1], by = b.rows[4 * j + 2];
+      if (Math.abs(bx - x) < reach && Math.abs(by - y) < reach) { x += (bx - x) * f; y += (by - y) * f; }
+    }
+    mc.fillStyle = palette[Math.min(a.rows[4 * k + 3], 600)];
+    mc.fillRect(ox + x / 65535 * size - dot / 2, oy + (1 - y / 65535) * size - dot / 2, dot, dot);
+  }
+  const now = a.t + (b.t - a.t) * f + DAY_START;
+  el("clock").textContent = String(Math.floor(now / 3600)).padStart(2, "0") + ":" + String(Math.floor(now % 3600 / 60)).padStart(2, "0");
+  el("s_count").textContent = a.count.toLocaleString("en-US");
+  el("s_speed").textContent = a.speed.toFixed(1) + " km/h";
+  el("s_still").textContent = a.still.toFixed(0) + "%";
+}
+
+function drawStrip() {
+  const [w, h] = fit(strip);
+  sc.fillStyle = "#0e1326"; sc.fillRect(0, 0, w, h);
+  if (!data) return;
+  const frames = data.frames, left = 44, right = 12, top = 18, bottom = 18, top_speed = 60;
+  const x = i => left + i / (frames.length - 1) * (w - left - right), y = v => top + (1 - v / top_speed) * (h - top - bottom);
+  sc.font = "11px 'Segoe UI', Arial, sans-serif"; sc.fillStyle = "#8791b5"; sc.textBaseline = "middle";
+  sc.strokeStyle = "#1c2340"; sc.lineWidth = 1;
+  for (const v of [0, 30, 60]) { sc.beginPath(); sc.moveTo(left, y(v)); sc.lineTo(w - right, y(v)); sc.stroke(); sc.textAlign = "right"; sc.fillText(String(v), left - 6, y(v)); }
+  sc.textAlign = "left"; sc.fillText("Mean speed (km/h)", left, 8);
+  sc.textAlign = "center";
+  for (let i = 0; i < frames.length; i++) if (frames[i].t % 600 === 0) {
+    const now = frames[i].t + DAY_START;
+    sc.fillText(String(Math.floor(now / 3600)).padStart(2, "0") + ":" + String(Math.floor(now % 3600 / 60)).padStart(2, "0"), x(i), h - 8);
+  }
+  sc.strokeStyle = "#7fb2ee"; sc.lineWidth = 2; sc.beginPath();
+  frames.forEach((fr, i) => { if (i === 0) sc.moveTo(x(i), y(fr.speed)); else sc.lineTo(x(i), y(fr.speed)); });
+  sc.stroke();
+  sc.strokeStyle = "#ffffff"; sc.lineWidth = 1.5; sc.beginPath(); sc.moveTo(x(cursor), top - 4); sc.lineTo(x(cursor), h - bottom + 2); sc.stroke();
+}
+
+function frame(now) {
+  if (last === null) last = now;
+  const elapsed = Math.min(0.1, (now - last) / 1000); last = now;
+  if (data && playing) {
+    cursor += elapsed * parseFloat(el("rate").value) / data.meta.period;
+    if (cursor >= data.frames.length - 1) cursor = 0;
+  }
+  drawMap(); drawStrip();
+  requestAnimationFrame(frame);
+}
+
+function seek(event) {
+  if (!data) return;
+  const box = strip.getBoundingClientRect(), share = (event.clientX - box.left - 44) / (box.width - 56);
+  cursor = Math.min(Math.max(share, 0), 0.999) * (data.frames.length - 1);
+}
+
+let dragging = false;
+strip.addEventListener("pointerdown", e => { dragging = true; strip.setPointerCapture(e.pointerId); seek(e); });
+strip.addEventListener("pointermove", e => { if (dragging) seek(e); });
+strip.addEventListener("pointerup", () => { dragging = false; });
+el("toggle").addEventListener("click", () => { playing = !playing; el("toggle").textContent = playing ? "Pause" : "Play"; });
+el("scenario").addEventListener("change", () => load(el("scenario").value));
+
+(async () => {
+  try {
+    const list = await (await fetch("web/scenarios.json")).json();
+    for (const item of list) { const option = document.createElement("option"); option.value = item.tag; option.textContent = item.label; el("scenario").appendChild(option); }
+    await load(list[0].tag);
+  } catch (problem) {
+    el("message").textContent = "No recorded scenario found. Open this page through a web server, not by double-clicking the file.";
+  }
+  window.__replay = () => data;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
