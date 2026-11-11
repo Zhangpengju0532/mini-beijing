@@ -84,13 +84,13 @@ async function load(tag) {
     const meta = await (await fetch("web/" + tag + ".json")).json();
     const reply = await fetch("web/" + tag + ".bin");
     if (!reply.ok) throw new Error("missing");
-    const size = parseInt(reply.headers.get("Content-Length") || "0", 10), reader = reply.body.getReader(), parts = [];
+    const packed = reply.headers.get("Content-Encoding"), size = packed ? 0 : parseInt(reply.headers.get("Content-Length") || "0", 10), reader = reply.body.getReader(), parts = [];
     let got = 0;
     for (;;) {
       const piece = await reader.read();
       if (piece.done) break;
       parts.push(piece.value); got += piece.value.length;
-      el("message").textContent = size ? "Loading " + Math.round(100 * got / size) + "%" : "Loading " + (got / 1e6).toFixed(1) + " MB";
+      el("message").textContent = size ? "Loading " + Math.min(100, Math.round(100 * got / size)) + "%" : "Loading, " + (got / 1e6).toFixed(1) + " MB received";
     }
     const bytes = new Uint8Array(got);
     let filled = 0;
